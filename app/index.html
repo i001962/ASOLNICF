@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generalized Metalog Table — Inscribe the Lookup</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, sans-serif; background: #0b0e14; color: #e6e9f0; }
+  header { padding: 20px 24px 12px; border-bottom: 1px solid #1e2532; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 4px 0; color: #9aa4b8; max-width: 900px; }
+  header p code, .mono { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  #progress-wrap { margin-top: 12px; max-width: 900px; }
+  #progress-bar { height: 10px; background: #1e2532; border-radius: 6px; overflow: hidden; }
+  #progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #4ade80); transition: width .4s; }
+  #progress-label { margin-top: 6px; color: #9aa4b8; font-size: 13px; }
+  #wallet-row { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: #22c55e; color: #06130a; border: 0; border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #2a3342; color: #6b7688; cursor: not-allowed; }
+  button.secondary { background: #1e2532; color: #e6e9f0; }
+  main { display: flex; gap: 0; align-items: stretch; }
+  #grid-scroll { overflow: auto; padding: 16px 0 16px 24px; flex: 1; }
+  #grid { display: inline-block; border: 1px solid #1e2532; border-radius: 8px; padding: 8px; background: #0e1219; }
+  .g-row { display: flex; align-items: center; gap: 2px; margin-bottom: 2px; }
+  .g-row:last-child { margin-bottom: 0; }
+  .g-label { width: 52px; flex: none; text-align: right; padding-right: 8px; color: #9aa4b8; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .g-head { display: flex; gap: 2px; margin-bottom: 4px; }
+  .g-head .g-label { visibility: hidden; }
+  .g-hcell { width: 12px; flex: none; color: #5b6577; font-size: 9px; text-align: center; }
+  .cell { width: 12px; height: 12px; flex: none; border-radius: 2px; background: #1a2130; cursor: pointer; border: 1px solid transparent; }
+  .cell:hover { border-color: #e6e9f0; }
+  .cell.minted { background: #22c55e; }
+  .cell.selected { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+  #panel { width: 340px; flex: none; border-left: 1px solid #1e2532; padding: 20px; overflow-y: auto; max-height: calc(100vh - 200px); position: sticky; top: 0; }
+  #panel h2 { margin: 0 0 8px; font-size: 16px; }
+  #panel .kv { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
+  #panel .kv span:first-child { color: #9aa4b8; }
+  #coeffs { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
+  #coeffs td { border-bottom: 1px solid #1e2532; padding: 3px 4px; font-variant-numeric: tabular-nums; }
+  #coeffs td:first-child { color: #9aa4b8; width: 36px; }
+  #status { margin: 10px 0; padding: 10px; border-radius: 8px; background: #141a26; font-size: 13px; min-height: 40px; }
+  #status.ok { border: 1px solid #22c55e; }
+  #status.err { border: 1px solid #ef4444; }
+  .hint { color: #9aa4b8; font-size: 12.5px; }
+  #root-check { font-size: 12px; color: #9aa4b8; margin-top: 8px; word-break: break-all; }
+  @media (max-width: 900px) { main { flex-direction: column; } #panel { width: 100%; border-left: 0; border-top: 1px solid #1e2532; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Generalized Metalog Table &mdash; inscribe the lookup</h1>
+  <p>2,204 cells (19 &sigma; rows &times; 116 N columns). Each cell holds the 9 metalog
+  a-coefficients for the sum of IID lognormals (Keelin/Chrisman/Savage 2019).
+  Minting a cell writes its values <b>on chain</b>, verified by merkle proof &mdash; no admin, no trust.
+  Proceeds go to the Base revnet (project 13) with <b>you</b> as beneficiary.
+  Minters are permanently recorded: once complete, any contract can call <span class="mono">getCoeffs()</span>.</p>
+  <div id="progress-wrap">
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div id="progress-label">loading&hellip;</div>
+  </div>
+  <div id="wallet-row">
+    <button id="connect" class="secondary">Connect wallet</button>
+    <span id="account" class="hint"></span>
+    <span id="root-check" class="mono"></span>
+  </div>
+</header>
+<main>
+  <div id="grid-scroll"><div id="grid"></div></div>
+  <aside id="panel">
+    <h2>Cell inspector</h2>
+    <p class="hint">Click any cell in the table.</p>
+    <div id="detail"></div>
+    <div id="status">Select a cell to inspect or mint it.</div>
+    <button id="mint" disabled>Mint this cell</button>
+  </aside>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+<script>
+"use strict";
+/* ============ config ============ */
+const CONTRACT_ADDRESS = ""; // <-- set after deploy
+const CHAIN_ID = 8453;       // Base
+const CHAIN_NAME = "Base";
+const SCALE = 1e12;
+const ABI = [
+  "function mint(uint256 sectionId, int256[9] values, bytes32[] proof) payable",
+  "function mintPrice() view returns (uint256)",
+  "function totalInscribed() view returns (uint256)",
+  "function merkleRoot() view returns (bytes32)",
+  "function inscribedBitmap() view returns (uint256[35])",
+  "function inscribedBy(uint256) view returns (address)",
+  "function getCoeffs(uint256 sigmaIdx, uint256 nIdx) view returns (int256[9])",
+  "function sectionCoords(uint256) view returns (uint256 sigmaIdx, uint256 nIdx)"
+];
+/* ============ state ============ */
+let table = null;          // sections.json
+let mintedBits = null;     // Uint8Array(2204)
+let selected = null;
+let provider = null, signer = null, contract = null, account = null;
+
+const $ = id => document.getElementById(id);
+const short = a => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
+
+async function init() {
+  const res = await fetch("sections.json");
+  table = await res.json();
+  buildGrid();
+  if (CONTRACT_ADDRESS) {
+    await refreshOnchain();
+    setInterval(refreshOnchain, 20000);
+  } else {
+    $("progress-label").textContent = "contract not deployed yet — table data loaded, minting disabled.";
+    $("root-check").textContent = "merkle root (deploy with this): " + table.merkleRoot;
+  }
+}
+
+function buildGrid() {
+  const g = $("grid");
+  g.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "g-head";
+  head.innerHTML = '<div class="g-label"></div>' + table.N.map(n =>
+    `<div class="g-hcell">${n % 50 === 0 || n === 1 ? n : ""}</div>`).join("");
+  g.appendChild(head);
+  table.sigma.forEach((s, si) => {
+    const row = document.createElement("div");
+    row.className = "g-row";
+    let html = `<div class="g-label">σ=${s}</div>`;
+    for (let ni = 0; ni < table.N.length; ni++) {
+      const id = si * table.N.length + ni;
+      html += `<div class="cell" data-id="${id}" title="σ=${s} N=${table.N[ni]}"></div>`;
+    }
+    row.innerHTML = html;
+    g.appendChild(row);
+  });
+  g.addEventListener("click", ev => {
+    const c = ev.target.closest(".cell");
+    if (c) selectCell(parseInt(c.dataset.id, 10));
+  });
+}
+
+function paintBits() {
+  document.querySelectorAll(".cell").forEach(c => {
+    c.classList.toggle("minted", !!mintedBits[parseInt(c.dataset.id, 10)]);
+  });
+}
+
+async function refreshOnchain() {
+  try {
+    const ro = contract || new ethers.Contract(CONTRACT_ADDRESS, ABI,
+      new ethers.providers.JsonRpcProvider("https://mainnet.base.org"));
+    const [total, words, price, root] = await Promise.all([
+      ro.totalInscribed(), ro.inscribedBitmap(), ro.mintPrice(), ro.merkleRoot()
+    ]);
+    mintedBits = new Uint8Array(2204);
+    words.forEach((w, wi) => {
+      let b = ethers.BigNumber.from(w);
+      for (let bit = 0; bit < 256; bit++) {
+        const id = wi * 256 + bit;
+        if (id >= 2204) break;
+        if (b.and(ethers.BigNumber.from(1).shl(bit)).gt(0)) mintedBits[id] = 1;
+      }
+    });
+    paintBits();
+    const pct = (Number(total) / 2204 * 100);
+    $("progress-fill").style.width = pct + "%";
+    $("progress-label").textContent =
+      `${total.toString()} / 2204 cells inscribed (${pct.toFixed(2)}%) — mint price ${ethers.utils.formatEther(price)} ETH`;
+    const ok = root.toLowerCase() === table.merkleRoot.toLowerCase();
+    $("root-check").textContent = ok ? "✓ contract merkle root matches this table"
+                                     : "⚠ contract root does NOT match this table";
+    if (selected !== null) showDetail(selected);
+  } catch (e) {
+    $("progress-label").textContent = "could not reach contract: " + (e.reason || e.message);
+  }
+}
+
+function showDetail(id) {
+  const sec = table.sections[id];
+  const s = table.sigma[sec.sigmaIdx], n = sec.N;
+  const minted = mintedBits && mintedBits[id];
+  let html = `<div class="kv"><span>section</span><b>#${id}</b></div>
+    <div class="kv"><span>σ</span><b>${s}</b></div>
+    <div class="kv"><span>N</span><b>${n}</b></div>
+    <div class="kv"><span>status</span><b>${minted ? "inscribed ✓" : "uninscribed"}</b></div>`;
+  if (minted && contract) {
+    contract.inscribedBy(id).then(a => {
+      $("detail").innerHTML = html + `<div class="kv"><span>inscribed by</span><b class="mono">${short(a)}</b></div>` + coeffTable(sec);
+    }).catch(() => { $("detail").innerHTML = html + coeffTable(sec); });
+  } else {
+    $("detail").innerHTML = html + coeffTable(sec);
+  }
+  const btn = $("mint");
+  btn.disabled = !(CONTRACT_ADDRESS && !minted && account);
+  btn.textContent = !CONTRACT_ADDRESS ? "Contract not deployed" : minted ? "Already inscribed" : "Mint this cell";
+}
+
+function coeffTable(sec) {
+  const rows = sec.values.map((v, i) =>
+    `<tr><td>a${i + 1}</td><td>${(Number(v) / SCALE).toPrecision(9)}</td><td class="mono" style="color:#5b6577">${v}</td></tr>`).join("");
+  return `<table id="coeffs">${rows}</table>
+    <p class="hint">a-coefficients of the 9-term semi-bounded metalog for avg/N lognormals ÷ p50. Stored on chain ×1e12.</p>`;
+}
+
+function selectCell(id) {
+  selected = id;
+  document.querySelectorAll(".cell.selected").forEach(c => c.classList.remove("selected"));
+  const el = document.querySelector(`.cell[data-id="${id}"]`);
+  if (el) el.classList.add("selected");
+  showDetail(id);
+}
+
+async function connect() {
+  if (!window.ethereum) { setStatus("No wallet found.", true); return; }
+  provider = new ethers.providers.Web3Provider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  const net = await provider.getNetwork();
+  if (net.chainId !== CHAIN_ID) {
+    try {
+      await window.ethereum.request({ method: "wallet_switchEthereumChain",
+        params: [{ chainId: "0x" + CHAIN_ID.toString(16) }] });
+    } catch (e) {
+      setStatus("Please switch to " + CHAIN_NAME + ".", true); return;
+    }
+  }
+  signer = provider.getSigner();
+  account = await signer.getAddress();
+  contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+  $("account").textContent = "connected: " + short(account);
+  $("connect").textContent = "Connected";
+  if (selected !== null) showDetail(selected);
+  setStatus("Wallet connected. Select an uninscribed cell to mint.");
+}
+
+function setStatus(msg, isErr) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = isErr ? "err" : "ok";
+}
+
+async function mintSelected() {
+  if (selected === null || !contract) return;
+  const sec = table.sections[selected];
+  const btn = $("mint");
+  try {
+    btn.disabled = true;
+    setStatus("Sending mint transaction…");
+    const price = await contract.mintPrice();
+    const values = sec.values.map(v => ethers.BigNumber.from(v));
+    const tx = await contract.mint(sec.id, values, sec.proof, { value: price });
+    setStatus("Pending: " + tx.hash);
+    await tx.wait();
+    setStatus("✓ Cell #" + sec.id + " inscribed! Proceeds sent to the revnet with you as beneficiary.");
+    await refreshOnchain();
+  } catch (e) {
+    setStatus("Mint failed: " + ((e.reason || e.error?.message || e.message) || e), true);
+  } finally {
+    if (selected !== null) showDetail(selected);
+  }
+}
+
+$("connect").addEventListener("click", connect);
+$("mint").addEventListener("click", mintSelected);
+init();
+</script>
+</body>
+</html>
