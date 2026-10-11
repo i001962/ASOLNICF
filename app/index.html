@@ -33,6 +33,7 @@
   .cell:hover { border-color: #e6e9f0; }
   .cell.minted { background: #22c55e; }
   .cell.selected { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+  .cell.in-batch { background: #f59e0b; }
   #panel { width: 340px; flex: none; border-left: 1px solid #1e2532; padding: 20px; overflow-y: auto; max-height: calc(100vh - 200px); position: sticky; top: 0; }
   #panel h2 { margin: 0 0 8px; font-size: 16px; }
   #panel .kv { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
@@ -62,18 +63,25 @@
   </div>
   <div id="wallet-row">
     <button id="connect" class="secondary">Connect wallet</button>
+    <button id="batch-toggle" class="secondary">Batch select: off</button>
     <span id="account" class="hint"></span>
     <span id="root-check" class="mono"></span>
+  </div>
+  <div id="batch-bar" style="display:none; margin-top:10px;">
+    <span id="batch-count" class="hint">0 selected</span>
+    <button id="batch-mint">Mint bundle</button>
+    <button id="batch-clear" class="secondary">Clear</button>
   </div>
 </header>
 <main>
   <div id="grid-scroll"><div id="grid"></div></div>
   <aside id="panel">
     <h2>Cell inspector</h2>
-    <p class="hint">Click any cell in the table.</p>
+    <p class="hint">Click any cell in the table. Toggle "Batch select" to bundle multiple mints.</p>
     <div id="detail"></div>
     <div id="status">Select a cell to inspect or mint it.</div>
     <button id="mint" disabled>Mint this cell</button>
+    <button id="mint-art" class="secondary" disabled style="margin-top:8px;">Mint portrait</button>
   </aside>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
@@ -81,11 +89,13 @@
 "use strict";
 /* ============ config ============ */
 const CONTRACT_ADDRESS = ""; // <-- set after deploy
+const ART_CONTRACT_ADDRESS = ""; // <-- set after deploy
 const CHAIN_ID = 8453;       // Base
 const CHAIN_NAME = "Base";
 const SCALE = 1e12;
 const ABI = [
   "function mint(uint256 sectionId, int256[9] values, bytes32[] proof) payable",
+  "function mintBatch(uint256[] sectionIds, int256[9][] values, bytes32[][] proofs) payable",
   "function mintPrice() view returns (uint256)",
   "function totalInscribed() view returns (uint256)",
   "function merkleRoot() view returns (bytes32)",
@@ -94,11 +104,21 @@ const ABI = [
   "function getCoeffs(uint256 sigmaIdx, uint256 nIdx) view returns (int256[9])",
   "function sectionCoords(uint256) view returns (uint256 sigmaIdx, uint256 nIdx)"
 ];
+const ART_ABI = [
+  "function mintArt(uint256 sectionId) payable",
+  "function mintArtBatch(uint256[] sectionIds) payable",
+  "function artMinted(uint256) view returns (bool)",
+  "function artBy(uint256) view returns (address)",
+  "function artPrice() view returns (uint256)",
+  "function totalArtMinted() view returns (uint256)"
+];
 /* ============ state ============ */
 let table = null;          // sections.json
 let mintedBits = null;     // Uint8Array(2204)
 let selected = null;
-let provider = null, signer = null, contract = null, account = null;
+let provider = null, signer = null, contract = null, artContract = null, account = null;
+let batchMode = false;
+let batchSet = new Set();
 
 const $ = id => document.getElementById(id);
 const short = a => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
@@ -137,8 +157,25 @@ function buildGrid() {
   });
   g.addEventListener("click", ev => {
     const c = ev.target.closest(".cell");
-    if (c) selectCell(parseInt(c.dataset.id, 10));
+    if (!c) return;
+    const id = parseInt(c.dataset.id, 10);
+    if (batchMode) toggleBatch(id);
+    else selectCell(id);
   });
+}
+
+function toggleBatch(id) {
+  if (mintedBits && mintedBits[id]) return; // already inscribed, skip
+  if (batchSet.has(id)) batchSet.delete(id);
+  else batchSet.add(id);
+  document.querySelector(`.cell[data-id="${id}"]`).classList.toggle("in-batch", batchSet.has(id));
+  updateBatchBar();
+}
+
+function updateBatchBar() {
+  $("batch-bar").style.display = batchMode ? "block" : "none";
+  $("batch-count").textContent = batchSet.size + " selected";
+  $("batch-mint").disabled = !(contract && batchSet.size > 0);
 }
 
 function paintBits() {
@@ -177,7 +214,7 @@ async function refreshOnchain() {
   }
 }
 
-function showDetail(id) {
+async function showDetail(id) {
   const sec = table.sections[id];
   const s = table.sigma[sec.sigmaIdx], n = sec.N;
   const minted = mintedBits && mintedBits[id];
@@ -195,6 +232,18 @@ function showDetail(id) {
   const btn = $("mint");
   btn.disabled = !(CONTRACT_ADDRESS && !minted && account);
   btn.textContent = !CONTRACT_ADDRESS ? "Contract not deployed" : minted ? "Already inscribed" : "Mint this cell";
+  // Art status
+  const artBtn = $("mint-art");
+  if (ART_CONTRACT_ADDRESS && minted && artContract) {
+    try {
+      const artDone = await artContract.artMinted(id);
+      artBtn.disabled = !(account && !artDone);
+      artBtn.textContent = artDone ? "Portrait minted ✓" : "Mint portrait";
+    } catch (e) { artBtn.disabled = true; artBtn.textContent = "Mint portrait"; }
+  } else {
+    artBtn.disabled = true;
+    artBtn.textContent = !ART_CONTRACT_ADDRESS ? "Art not deployed" : !minted ? "Inscribe first" : "Mint portrait";
+  }
 }
 
 function coeffTable(sec) {
@@ -228,9 +277,11 @@ async function connect() {
   signer = provider.getSigner();
   account = await signer.getAddress();
   contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+  artContract = ART_CONTRACT_ADDRESS ? new ethers.Contract(ART_CONTRACT_ADDRESS, ART_ABI, signer) : null;
   $("account").textContent = "connected: " + short(account);
   $("connect").textContent = "Connected";
   if (selected !== null) showDetail(selected);
+  updateBatchBar();
   setStatus("Wallet connected. Select an uninscribed cell to mint.");
 }
 
@@ -261,8 +312,65 @@ async function mintSelected() {
   }
 }
 
+async function mintBundle() {
+  if (!contract || batchSet.size === 0) return;
+  const btn = $("batch-mint");
+  try {
+    btn.disabled = true;
+    setStatus("Sending bundle transaction…");
+    const price = await contract.mintPrice();
+    const ids = [...batchSet];
+    const values = ids.map(id => table.sections[id].values.map(v => ethers.BigNumber.from(v)));
+    const proofs = ids.map(id => table.sections[id].proof);
+    const tx = await contract.mintBatch(ids, values, proofs, { value: price.mul(ids.length) });
+    setStatus("Pending: " + tx.hash);
+    await tx.wait();
+    setStatus(`✓ ${ids.length} cells inscribed in one bundle!`);
+    batchSet.clear();
+    document.querySelectorAll(".cell.in-batch").forEach(c => c.classList.remove("in-batch"));
+    await refreshOnchain();
+  } catch (e) {
+    setStatus("Bundle failed: " + ((e.reason || e.error?.message || e.message) || e), true);
+  } finally {
+    updateBatchBar();
+  }
+}
+
+async function mintArtSelected() {
+  if (selected === null || !artContract) return;
+  const btn = $("mint-art");
+  try {
+    btn.disabled = true;
+    setStatus("Sending portrait mint…");
+    const price = await artContract.artPrice();
+    const tx = await artContract.mintArt(selected, { value: price });
+    setStatus("Pending: " + tx.hash);
+    await tx.wait();
+    setStatus("✓ Portrait #" + selected + " minted! A unique on-chain SVG of this distribution.");
+    await showDetail(selected);
+  } catch (e) {
+    setStatus("Portrait mint failed: " + ((e.reason || e.error?.message || e.message) || e), true);
+  }
+}
+
 $("connect").addEventListener("click", connect);
 $("mint").addEventListener("click", mintSelected);
+$("mint-art").addEventListener("click", mintArtSelected);
+$("batch-toggle").addEventListener("click", () => {
+  batchMode = !batchMode;
+  $("batch-toggle").textContent = "Batch select: " + (batchMode ? "on" : "off");
+  if (!batchMode) {
+    batchSet.clear();
+    document.querySelectorAll(".cell.in-batch").forEach(c => c.classList.remove("in-batch"));
+  }
+  updateBatchBar();
+});
+$("batch-clear").addEventListener("click", () => {
+  batchSet.clear();
+  document.querySelectorAll(".cell.in-batch").forEach(c => c.classList.remove("in-batch"));
+  updateBatchBar();
+});
+$("batch-mint").addEventListener("click", mintBundle);
 init();
 </script>
 </body>

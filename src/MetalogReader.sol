@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {FixedPointMathLib} from "@solady/src/utils/FixedPointMathLib.sol";
 import "./GeneralizedMetalogTable.sol";
+import "./MetalogMath.sol";
 
 /// @title MetalogReader
 /// @notice The utility companion to GeneralizedMetalogTable: the shared on-chain
@@ -46,7 +47,7 @@ contract MetalogReader {
         returns (uint256)
     {
         int256 ratio = _avgRatioWad(sigma1e12, n, y); // avg/p50, wad
-        int256 avg = _mw(int256(p50Wad), ratio); // wad
+        int256 avg = MetalogMath.mulWad(int256(p50Wad), ratio); // wad
         return uint256(int256(n) * avg);
     }
 
@@ -57,7 +58,7 @@ contract MetalogReader {
         returns (uint256)
     {
         int256 ratio = _avgRatioWad(sigma1e12, n, y);
-        return uint256(_mw(int256(p50Wad), ratio));
+        return uint256(MetalogMath.mulWad(int256(p50Wad), ratio));
     }
 
     /// @notice Interpolated a-coefficients (wad) at (sigma, n). Exposed so other
@@ -78,7 +79,8 @@ contract MetalogReader {
         returns (int256)
     {
         if (y == 0 || y >= uint256(WAD)) revert BadProbability();
-        return _evalRatio(_interpCoeffs(sigma1e12, n), y);
+        int256[9] memory coeffs = _interpCoeffs(sigma1e12, n);
+        return int256(MetalogMath.evalRatio(coeffs, y));
     }
 
     /// @dev Bilinear interpolation of the 9 a-coeffs over the (sigma, N) grid.
@@ -92,7 +94,7 @@ contract MetalogReader {
         int256[9] memory lo = _interpN(si0, ni0, ni1, beta);
         int256[9] memory hi = _interpN(si1, ni0, ni1, beta);
         for (uint256 k = 0; k < 9; k++) {
-            out[k] = lo[k] + _mw(alpha, hi[k] - lo[k]);
+            out[k] = lo[k] + MetalogMath.mulWad(alpha, hi[k] - lo[k]);
         }
     }
 
@@ -106,27 +108,8 @@ contract MetalogReader {
         int256[9] memory c1 = table.getCoeffs(si, ni1);
         for (uint256 k = 0; k < 9; k++) {
             int256 v0 = c0[k] * TABLE_TO_WAD;
-            out[k] = v0 + _mw(beta, c1[k] * TABLE_TO_WAD - v0);
+            out[k] = v0 + MetalogMath.mulWad(beta, c1[k] * TABLE_TO_WAD - v0);
         }
-    }
-
-    /// @dev Evaluate the semi-bounded metalog: avg/p50 quantile = exp(M(y)), wad.
-    ///      M(y) = a1 + a2*g + a3*d*g + a4*d + a5*d^2 + a6*d^2*g + a7*d^3 + a8*d^3*g + a9*d^4
-    ///      with g = ln(y/(1-y)), d = y - 0.5.
-    function _evalRatio(int256[9] memory a, uint256 y) internal pure returns (int256) {
-        int256 d = int256(y) - WAD / 2;
-        uint256 r = FixedPointMathLib.divWad(y, uint256(WAD) - y); // y/(1-y), wad > 0
-        int256 g = FixedPointMathLib.lnWad(int256(r));
-        int256[4] memory pw; // pw[i] = d^(i+1), wad
-        pw[0] = d;
-        pw[1] = _mw(d, d);
-        pw[2] = _mw(pw[1], d);
-        pw[3] = _mw(pw[1], pw[1]);
-        int256 m = a[0] + _mw(a[1], g) + _mw(a[3], d);
-        m += _mw(a[2], _mw(d, g)) + _mw(a[4], pw[1]);
-        m += _mw(a[5], _mw(pw[1], g)) + _mw(a[6], pw[2]);
-        m += _mw(a[7], _mw(pw[2], g)) + _mw(a[8], pw[3]);
-        return FixedPointMathLib.expWad(m);
     }
 
     /// @dev Bracket sigma1e12 in the grid. Returns (loIdx, hiIdx, alphaWad).
@@ -167,13 +150,5 @@ contract MetalogReader {
         uint256 n1 = table.nAt(b);
         beta = n0 == n1 ? int256(0) : int256((n - n0) * uint256(WAD) / (n1 - n0));
         return (a, b, beta);
-    }
-
-    /// @dev Signed wad multiplication. Domain here: |x|,|y| <= ~1e20, so x*y
-    ///      cannot overflow int256 (max ~5.8e76).
-    function _mw(int256 x, int256 y) internal pure returns (int256 z) {
-        unchecked {
-            z = (x * y) / WAD;
-        }
     }
 }

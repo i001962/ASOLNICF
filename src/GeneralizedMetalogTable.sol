@@ -6,19 +6,7 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/Base64.sol";
-
-/// @notice Minimal Juicebox V6 terminal interface needed for native-token payments.
-interface IJBTerminal {
-    function pay(
-        uint256 projectId,
-        address token,
-        uint256 amount,
-        address beneficiary,
-        uint256 minReturnedTokens,
-        string calldata memo,
-        bytes calldata metadata
-    ) external payable returns (uint256 beneficiaryTokenCount);
-}
+import "./interfaces/IJBTerminal.sol";
 
 /// @title GeneralizedMetalogTable
 /// @notice A crowd-inscribed, on-chain lookup table for the generalized metalog
@@ -70,6 +58,8 @@ contract GeneralizedMetalogTable is ERC721, ReentrancyGuard {
     error InsufficientPayment();
     error InvalidProof();
     error CellNotInscribed();
+    error BadBatch();
+    error RefundFailed();
 
     constructor(bytes32 _merkleRoot, uint256 _mintPrice, address _revnetTerminal)
         ERC721("Generalized Metalog Table", "GMTABLE")
@@ -88,27 +78,61 @@ contract GeneralizedMetalogTable is ERC721, ReentrancyGuard {
         payable
         nonReentrant
     {
+        if (msg.value < mintPrice) revert InsufficientPayment();
+        _inscribe(sectionId, values, proof, msg.sender);
+        _payRevnet(msg.value, msg.sender);
+    }
+
+    /// @notice Inscribe multiple cells in one transaction. Pays the revnet once
+    ///         for the bundle total; the caller is the beneficiary.
+    function mintBatch(
+        uint256[] calldata sectionIds,
+        int256[9][] calldata values,
+        bytes32[][] calldata proofs
+    ) external payable nonReentrant {
+        uint256 n = sectionIds.length;
+        if (n == 0 || n != values.length || n != proofs.length) revert BadBatch();
+        uint256 total = mintPrice * n;
+        if (msg.value < total) revert InsufficientPayment();
+        for (uint256 i = 0; i < n; i++) {
+            _inscribe(sectionIds[i], values[i], proofs[i], msg.sender);
+        }
+        _payRevnet(total, msg.sender);
+        if (msg.value > total) {
+            (bool ok,) = msg.sender.call{value: msg.value - total}("");
+            if (!ok) revert RefundFailed();
+        }
+    }
+
+    /// @dev Verify proof and record one inscription (no payment).
+    function _inscribe(
+        uint256 sectionId,
+        int256[9] calldata values,
+        bytes32[] calldata proof,
+        address minter
+    ) internal {
         if (sectionId >= SECTIONS) revert BadSection();
         if (inscribed[sectionId]) revert AlreadyInscribed();
-        if (msg.value < mintPrice) revert InsufficientPayment();
 
         bytes32 leaf = keccak256(abi.encode(sectionId, values));
         if (!MerkleProof.verify(proof, merkleRoot, leaf)) revert InvalidProof();
 
         inscribed[sectionId] = true;
         _coeffs[sectionId] = values;
-        inscribedBy[sectionId] = msg.sender;
+        inscribedBy[sectionId] = minter;
         unchecked { totalInscribed += 1; }
-        emit Inscribed(sectionId, msg.sender, values);
+        emit Inscribed(sectionId, minter, values);
 
-        _safeMint(msg.sender, sectionId);
+        _safeMint(minter, sectionId);
+    }
 
-        // Forward everything to the revnet; the minter is the beneficiary.
-        revnetTerminal.pay{value: msg.value}(
+    /// @dev Forward ETH to the revnet with `beneficiary` receiving the tokens.
+    function _payRevnet(uint256 amount, address beneficiary) internal {
+        revnetTerminal.pay{value: amount}(
             REVNET_PROJECT_ID,
             NATIVE_TOKEN,
-            msg.value,
-            msg.sender,
+            amount,
+            beneficiary,
             0,
             "Generalized Metalog Table inscription",
             ""

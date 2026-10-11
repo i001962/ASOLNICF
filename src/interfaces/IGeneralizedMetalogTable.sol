@@ -16,6 +16,13 @@ interface IGeneralizedMetalogTable is IERC721 {
         external
         payable;
 
+    /// @notice Inscribe several cells in one transaction. One revnet payment for the total.
+    function mintBatch(
+        uint256[] calldata sectionIds,
+        int256[9][] calldata values,
+        bytes32[][] calldata proofs
+    ) external payable;
+
     /// @notice The 9 inscribed a-coefficients (scaled 1e12) for a grid cell.
     ///         Reverts CellNotInscribed if the cell is not yet inscribed.
     function getCoeffs(uint256 sigmaIdx, uint256 nIdx)

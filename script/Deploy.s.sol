@@ -4,8 +4,9 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 import "../src/GeneralizedMetalogTable.sol";
 import "../src/MetalogReader.sol";
+import "../src/MetalogArt.sol";
 
-/// @notice Deploy GeneralizedMetalogTable + MetalogReader to Base.
+/// @notice Deploy GeneralizedMetalogTable + MetalogReader + MetalogArt to Base.
 /// @dev Run: forge script script/Deploy.s.sol --rpc-url $BASE_RPC --private-key $KEY --broadcast
 contract Deploy is Script {
     // Merkle root over the 2204 (sigma, N) cells, leaf = keccak256(abi.encode(sectionId, int256[9] scaled)).
@@ -14,16 +15,22 @@ contract Deploy is Script {
     // Juicebox V6 primary ETH terminal on Base (project 13 "Split's Bankr Bot" revnet).
     address constant REVNET_TERMINAL = 0x130f5Dd2bD8805443Cf41755253D778a75a67f53;
     uint256 constant MINT_PRICE = 0.005 ether;
+    uint256 constant ART_PRICE = 0.002 ether;
 
-    function run() external returns (GeneralizedMetalogTable, MetalogReader) {
+    function run()
+        external
+        returns (GeneralizedMetalogTable, MetalogReader, MetalogArt)
+    {
         vm.startBroadcast();
         GeneralizedMetalogTable table =
             new GeneralizedMetalogTable(MERKLE_ROOT, MINT_PRICE, REVNET_TERMINAL);
         MetalogReader reader = new MetalogReader(address(table));
+        MetalogArt art = new MetalogArt(address(table), ART_PRICE, REVNET_TERMINAL);
         vm.stopBroadcast();
         console.log("GeneralizedMetalogTable deployed at:", address(table));
         console.log("MetalogReader deployed at:", address(reader));
+        console.log("MetalogArt deployed at:", address(art));
         console.log("merkle root:", vm.toString(MERKLE_ROOT));
-        return (table, reader);
+        return (table, reader, art);
     }
 }

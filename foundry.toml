@@ -5,4 +5,4 @@ libs = ["lib"]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
-fs_permissions = [{ access = "read", path = "./test/fixture.json" }, { access = "read", path = "./test/reader_fixture.json" }]
+fs_permissions = [{ access = "read", path = "./test/fixture.json" }, { access = "read", path = "./test/reader_fixture.json" }, { access = "write", path = "/tmp/art-preview.html" }]

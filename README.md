@@ -65,11 +65,34 @@ Trust model: reads are as good as the table — the merkle root is immutable, so
 wrong value can never be inscribed, and `getCoeffs` reverts for uninscribed
 cells (loud failure, never a silent zero).
 
+## Generative art (the collectible)
+
+`src/MetalogArt.sol` — 2204 unique on-chain SVG portraits, one per section. Each
+portrait visualizes that cell's probability distribution: the PDF curve rendered
+from its own a-coefficients, palette drawn from sigma (volatility as heat —
+blue for calm, ember for wild), starfield texture from a deterministic salt.
+Fully on-chain, no IPFS.
+
+- `mintArt(sectionId)` / `mintArtBatch(sectionIds[])` — requires the section to
+  be inscribed first; one portrait per section (first come). Proceeds to the
+  revnet, minter as beneficiary.
+- `tokenURI` returns base64 JSON with base64 SVG image + traits (sigma, N).
+
+## Batch minting
+
+Both contracts support bundles in one transaction:
+- `table.mintBatch(sectionIds, values[], proofs[])` — one revnet payment for the total.
+- `art.mintArtBatch(sectionIds[])` — ditto.
+
 ## Layout
 
-- `src/GeneralizedMetalogTable.sol` — the NFT/inscription contract
+- `src/GeneralizedMetalogTable.sol` — the NFT/inscription contract (single + batch mint)
 - `src/MetalogReader.sol` — the shared on-chain reader (the utility)
-- `script/Deploy.s.sol` — deploy script, deploys both (Base)
+- `src/MetalogArt.sol` — generative on-chain SVG portraits (single + batch mint)
+- `src/MetalogMath.sol` — shared fixed-point metalog math library
+- `src/interfaces/` — `IGeneralizedMetalogTable`, `IMetalogReader`, `IMetalogArt`, `IJBTerminal`
+- `script/Deploy.s.sol` — deploy script, deploys all three (Base)
+- `script/build_sections.py` — regenerate `app/sections.json` from upstream (build artifact)
 - `test/` — unit tests (mock terminal), fork test (real revnet), reader tests (vs Python reference)
 - `app/index.html` — single-page minting app: full 19×116 table, completion progress, click-to-mint
 - `app/sections.json` — all 2,204 cells with values + merkle proofs (2.3 MB)
